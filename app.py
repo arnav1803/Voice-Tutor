@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import random
 import time
 from dotenv import load_dotenv
@@ -9,6 +10,7 @@ from flask_socketio import SocketIO, emit
 from google.cloud import speech_v1p1beta1 as speech
 from google.cloud import texttospeech_v1beta1 as tts
 import google.generativeai as genai
+from google.oauth2 import service_account
 from google.api_core.exceptions import GoogleAPIError, InvalidArgument, ResourceExhausted
 
 # --- Basic Setup ---
@@ -17,22 +19,45 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET_KEY", "a_very_secret_key")
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# --- API Client Initialization ---
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+# --- API Client Initialization (REVISED LOGIC) ---
+google_creds_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+speech_client, tts_client, gemini_model = None, None, None
 
 try:
-    speech_client = speech.SpeechClient()
-    tts_client = tts.TextToSpeechClient()
-    safety_settings = {
-        'HARM_CATEGORY_HARASSMENT': 'BLOCK_MEDIUM_AND_ABOVE', 'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_MEDIUM_AND_ABOVE',
-        'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_MEDIUM_AND_ABOVE', 'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_MEDIUM_AND_ABOVE',
-    }
-    gemini_model = genai.GenerativeModel('models/gemini-1.5-flash', safety_settings=safety_settings)
-    print("API Clients and Gemini Model initialized.")
+    if google_creds_json:
+        # Check if the variable contains a JSON string or a file path
+        if google_creds_json.strip().startswith('{'):
+            # Load credentials directly from the JSON string
+            credentials_info = json.loads(google_creds_json)
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+        else:
+            # Load credentials from the file path (for local development)
+            credentials = service_account.Credentials.from_service_account_file(google_creds_json)
+
+        speech_client = speech.SpeechClient(credentials=credentials)
+        tts_client = tts.TextToSpeechClient(credentials=credentials)
+        print("Google Cloud clients initialized successfully.")
+    else:
+        print("ERROR: GOOGLE_APPLICATION_CREDENTIALS environment variable not set.")
+
 except Exception as e:
-    print(f"ERROR initializing clients: {e}")
-    speech_client, tts_client, gemini_model = None, None, None
+    print(f"ERROR: Could not initialize Google Cloud clients: {e}")
+
+try:
+    if GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        safety_settings = {
+            'HARM_CATEGORY_HARASSMENT': 'BLOCK_MEDIUM_AND_ABOVE', 'HARM_CATEGORY_HATE_SPEECH': 'BLOCK_MEDIUM_AND_ABOVE',
+            'HARM_CATEGORY_SEXUALLY_EXPLICIT': 'BLOCK_MEDIUM_AND_ABOVE', 'HARM_CATEGORY_DANGEROUS_CONTENT': 'BLOCK_MEDIUM_AND_ABOVE',
+        }
+        gemini_model = genai.GenerativeModel('models/gemini-1.5-flash', safety_settings=safety_settings)
+        print("Google Gemini model initialized.")
+    else:
+        print("ERROR: GEMINI_API_KEY environment variable not set.")
+except Exception as e:
+    print(f"ERROR: Could not initialize Gemini model: {e}")
+
 
 # --- State Management ---
 conversation_history = {}
@@ -42,21 +67,18 @@ ROLEPLAY_CONTEXTS = {
         "Your goal is to be a friendly classmate. Start by asking for their name, then ask about their favorite subject. "
         "Keep your replies short, encouraging, and directly related to what the child says. "
         "If the child says something sad or negative, respond with empathy and kindness before continuing the topic."
-        "Remember Arnav Sharma is the owner of this AI"
     ),
     "store": (
         "You are Genie, an AI English tutor in a roleplay with a child at a 'store'. "
         "Your goal is to be a friendly shopkeeper. Start by greeting them and asking what they want to buy. "
         "React to their choice, then tell them a pretend price to complete the interaction. "
         "Keep your replies short, cheerful, and relevant."
-        "Remember Arnav Sharma is the owner of this AI"
     ),
     "home": (
         "You are Genie, an AI English tutor, in a roleplay with a child about being at 'home'. "
         "Your goal is to be a kind and curious family member. Start by asking who they live with. "
         "Then, based on their response, ask them what their favorite thing to do at home is. "
         "Keep the conversation warm, natural, and encouraging. Ask one question at a time."
-        "Remember Arnav Sharma is the owner of this AI"
     )
 }
 
@@ -97,6 +119,9 @@ def translate_text(text, target_language_code):
 def process_and_respond(client_sid, user_text, mode, scenario, language):
     """Generates an AI response, translates it, and sends it back as audio."""
     try:
+        if not all([speech_client, tts_client, gemini_model]):
+            raise ConnectionError("One or more API clients are not initialized. Check server logs.")
+
         if not user_text.strip():
             english_response_text = "I didn't hear anything. Could you speak up, please? 😊"
         else:
@@ -121,8 +146,7 @@ def process_and_respond(client_sid, user_text, mode, scenario, language):
         text_for_speech = translated_text
         if '(' in text_for_speech:
             text_for_speech = text_for_speech.split('(', 1)[0].strip()
-        text_for_speech = re.sub(r"'.*?'", '', text_for_speech)
-        text_for_speech = re.sub(r'".*?"', '', text_for_speech)
+        text_for_speech = re.sub(r"'.*?'|\".*?\"", '', text_for_speech)
 
         emoji_pattern = re.compile(
             "["
@@ -143,8 +167,6 @@ def process_and_respond(client_sid, user_text, mode, scenario, language):
         audio_config = tts.AudioConfig(audio_encoding=tts.AudioEncoding.MP3)
         tts_response = tts_client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
         
-        # --- MODIFIED EMIT ---
-        # Send both the translated text and the original English text
         emit('audio_response', {
             'audio_data': tts_response.audio_content,
             'translated_text': translated_text,
@@ -175,18 +197,23 @@ def handle_disconnect():
 @socketio.on('final_audio_blob')
 def handle_final_audio_blob(data):
     client_sid = request.sid
-    audio_data = data['audio_data']
-    audio = speech.RecognitionAudio(content=audio_data)
-    config = speech.RecognitionConfig(
-        encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
-        sample_rate_hertz=48000,
-        language_code="en-US"
-    )
-    response = speech_client.recognize(config=config, audio=audio)
-    user_transcript = response.results[0].alternatives[0].transcript if response.results else ""
-    emit('transcription', {'text': user_transcript})
-    print(f"Transcript for {client_sid}: '{user_transcript}'")
-    process_and_respond(client_sid, user_transcript, data['mode'], data['scenario'], data['language'])
+    try:
+        audio_data = data['audio_data']
+        audio = speech.RecognitionAudio(content=audio_data)
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+            sample_rate_hertz=48000,
+            language_code="en-US"
+        )
+        response = speech_client.recognize(config=config, audio=audio)
+        user_transcript = response.results[0].alternatives[0].transcript if response.results else ""
+        emit('transcription', {'text': user_transcript})
+        print(f"Transcript for {client_sid}: '{user_transcript}'")
+        process_and_respond(client_sid, user_transcript, data['mode'], data['scenario'], data['language'])
+    except Exception as e:
+        print(f"ERROR in handle_final_audio_blob: {e}")
+        emit('backend_message', {'message': 'Error processing audio.', 'error': str(e)})
+
 
 @socketio.on('text_message')
 def handle_text_message(data):
