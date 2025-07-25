@@ -1,0 +1,8 @@
+flask
+flask-socketio
+python-dotenv
+google-cloud-speech
+google-cloud-texttospeech
+google-generativeai
+gunicorn
+eventlet
