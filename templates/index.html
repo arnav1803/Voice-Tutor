@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpeakGenie Voice Tutor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
+    <style>
+        /* --- Animation Keyframes --- */
+        @keyframes subtle-pan {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            color: #1c1e21;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-size: 150%;
+            background-position: center;
+            transition: background-image 0.7s ease-in-out;
+            animation: subtle-pan 40s infinite linear;
+        }
+        #container {
+            max-width: 600px;
+            width: 100%;
+            margin: 20px;
+            padding: 30px;
+            background-color: rgba(255, 255, 255, 0.94);
+            border-radius: 16px;
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        h1 { color: #007bff; margin-bottom: 10px; font-size: 2.5rem; }
+        h2 { color: #4b4f56; margin-top: 0; font-weight: 400; }
+
+        /* --- Custom Backgrounds --- */
+        body.default-bg { background-image: linear-gradient(135deg, #a1c4fd 0%, #c2e9fb 100%); animation: none; }
+        body.chat { background-image: url('/static/img/chat.png'); }
+        body.roleplay-school { background-image: url('/static/img/school.png'); }
+        body.roleplay-store { background-image: url('/static/img/store.png'); }
+        /* --- NEW BACKGROUND --- */
+        body.roleplay-home { background-image: url('/static/img/home.png'); }
+
+
+        /* --- UI Styles --- */
+        #setupScreen h3 { color: #606770; font-weight: 600; margin-bottom: 15px; }
+        .mode-selection { display: flex; justify-content: space-around; gap: 10px; margin-bottom: 25px; }
+        .mode-card {
+            flex: 1; padding: 20px 10px; border: 2px solid #dddfe2; border-radius: 12px;
+            cursor: pointer; transition: all 0.2s ease-in-out;
+        }
+        .mode-card:hover { border-color: #007bff; background-color: #f0f8ff; }
+        .mode-card.selected { border-color: #007bff; background-color: #e7f3ff; font-weight: bold; }
+        .mode-card .icon { font-size: 2.5rem; margin-bottom: 10px; }
+        .language-selection { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 25px; }
+
+        #sessionHeader {
+            background-color: #f0f2f5; padding: 15px; border-radius: 12px; margin-bottom: 20px;
+            font-size: 1.1rem; font-weight: 600; color: #333; position: relative;
+        }
+        #endSessionButton {
+            position: absolute; top: 50%; right: 10px; transform: translateY(-50%); background: #e4e6eb;
+            color: #333; border: none; border-radius: 50%; width: 30px; height: 30px;
+            font-weight: bold; cursor: pointer; line-height: 30px; padding: 0;
+        }
+        #endSessionButton:hover { background-color: #d8dadf; }
+
+        #status { font-weight: bold; margin-bottom: 20px; color: #555; height: 20px; }
+        button, select {
+            padding: 12px 25px; margin: 5px; border: 1px solid #ddd; border-radius: 25px;
+            font-size: 16px; cursor: pointer; transition: background-color 0.3s ease; background-color: #f8f9fa;
+        }
+        button:disabled { cursor: not-allowed; background-color: #e9ecef; }
+        #startButton { background-color: #007bff; color: white; border: none; font-size: 18px; padding: 15px 40px; }
+        #recordButton { background-color: #28a745; color: white; border: none; }
+        #stopButton { background-color: #dc3545; color: white; border: none; }
+        #textInputContainer { display: flex; margin-top: 15px; gap: 10px; }
+        #textInput { flex-grow: 1; border: 2px solid #ccc; border-radius: 20px; padding: 0 15px; font-size: 16px; }
+        #sendButton { border: none; background-color: #007bff; color: white; border-radius: 20px; padding: 10px 20px; }
+        #responseArea { margin-top: 20px; padding-top: 20px; text-align: left; }
+        .translation { font-size: 0.9em; color: #666; font-style: italic; }
+    </style>
+</head>
+<body class="default-bg">
+    <div id="container">
+        <h1>SpeakGenie</h1>
+        <div id="setupScreen">
+            <h2>Welcome! Let's get started.</h2>
+            <h3>1. Choose an activity</h3>
+            <div class="mode-selection">
+                <div class="mode-card" onclick="selectMode('chat', '', this)"><div class="icon">💬</div><div>Free Chat</div></div>
+                <div class="mode-card" onclick="selectMode('roleplay', 'school', this)"><div class="icon">🏫</div><div>At School</div></div>
+                <div class="mode-card" onclick="selectMode('roleplay', 'store', this)"><div class="icon">🛒</div><div>At the Store</div></div>
+                <div class="mode-card" onclick="selectMode('roleplay', 'home', this)"><div class="icon">🏠</div><div>At Home</div></div>
+            </div>
+            <h3>2. Select a language</h3>
+            <div class="language-selection">
+                <select id="languageSelector">
+                    <option value="en-US">English</option>
+                    <option value="hi-IN">Hindi (हिन्दी)</option>
+                    <option value="mr-IN">Marathi (मराठी)</option>
+                    <option value="gu-IN">Gujarati (ગુજરાતી)</option>
+                    <option value="ta-IN">Tamil (தமிழ்)</option>
+                    <option value="pa-IN">Punjabi (ਪੰਜਾਬੀ)</option>
+                </select>
+            </div>
+            <button id="startButton" disabled>Start Session</button>
+        </div>
+        <div id="sessionScreen" style="display: none;">
+            <div id="sessionHeader"></div>
+            <p id="status">Ready to speak or type!</p>
+            <button id="recordButton">Start Recording</button>
+            <button id="stopButton" style="display: none;">Stop</button>
+            <audio id="audioPlayback" controls style="display: none;"></audio>
+            <div id="textInputContainer">
+                <input type="text" id="textInput" placeholder="Or type your message here...">
+                <button id="sendButton">Send</button>
+            </div>
+            <div id="responseArea">
+                <strong>You Said:</strong> <span id="transcriptText">...</span><br>
+                <strong>Genie Said:</strong> <span id="genieText">...</span>
+            </div>
+        </div>
+    </div>
+<script>
+    const socket = io();
+    let mediaRecorder, audioChunks = [], isProcessing = false;
+    let currentMode, currentScenario, currentLanguage, modeText, modeIcon;
+
+    const elements = {
+        body: document.body, setupScreen: document.getElementById('setupScreen'), sessionScreen: document.getElementById('sessionScreen'),
+        startButton: document.getElementById('startButton'), languageSelector: document.getElementById('languageSelector'),
+        sessionHeader: document.getElementById('sessionHeader'), status: document.getElementById('status'),
+        recordButton: document.getElementById('recordButton'), stopButton: document.getElementById('stopButton'),
+        audioPlayback: document.getElementById('audioPlayback'), transcriptText: document.getElementById('transcriptText'),
+        genieText: document.getElementById('genieText'), modeCards: document.querySelectorAll('.mode-card'),
+        textInput: document.getElementById('textInput'), sendButton: document.getElementById('sendButton')
+    };
+    
+    function selectMode(mode, scenario, selectedCard) {
+        currentMode = mode; currentScenario = scenario;
+        modeText = selectedCard.children[1].textContent;
+        modeIcon = selectedCard.children[0].textContent;
+        elements.modeCards.forEach(card => card.classList.remove('selected'));
+        selectedCard.classList.add('selected');
+        elements.startButton.disabled = false;
+        updateBackground();
+    }
+
+    elements.startButton.addEventListener('click', () => {
+        currentLanguage = elements.languageSelector.value;
+        const langText = elements.languageSelector.options[elements.languageSelector.selectedIndex].text;
+        elements.setupScreen.style.display = 'none';
+        elements.sessionScreen.style.display = 'block';
+        elements.sessionHeader.innerHTML = `${modeIcon} ${modeText} | ${langText} <button id="endSessionButton" onclick="endSession()">X</button>`;
+        elements.status.textContent = 'Click "Start Recording" or type a message.';
+    });
+
+    function endSession() {
+        if (mediaRecorder && mediaRecorder.state === 'recording') { mediaRecorder.stop(); }
+        isProcessing = false; elements.body.className = 'default-bg';
+        elements.sessionScreen.style.display = 'none'; elements.setupScreen.style.display = 'block';
+        elements.startButton.disabled = true;
+        elements.modeCards.forEach(card => card.classList.remove('selected'));
+        elements.recordButton.style.display = 'inline-block';
+        elements.stopButton.style.display = 'none';
+        elements.audioPlayback.style.display = 'none';
+        elements.transcriptText.textContent = '...'; elements.genieText.textContent = '...';
+    }
+
+    function updateBackground() {
+        let newClass = '';
+        if (currentMode === 'chat') { newClass = 'chat'; } 
+        else if (currentMode === 'roleplay') { newClass = `roleplay-${currentScenario}`; }
+        elements.body.className = newClass || 'default-bg';
+    }
+
+    function lockUI() {
+        isProcessing = true;
+        elements.status.textContent = 'Processing... Waiting for Genie...';
+        elements.recordButton.disabled = true;
+        elements.sendButton.disabled = true;
+    }
+
+    function unlockUI() {
+        isProcessing = false;
+        elements.status.textContent = 'Genie finished. You can record or type again.';
+        elements.recordButton.disabled = false;
+        elements.recordButton.style.display = 'inline-block';
+        elements.sendButton.disabled = false;
+    }
+
+    socket.on('connect', () => console.log('Socket.IO connected!'));
+    socket.on('disconnect', () => elements.status.textContent = 'Disconnected.');
+
+    socket.on('audio_response', (data) => {
+        const genieAudioBlob = new Blob([data.audio_data], { type: 'audio/mpeg' });
+        elements.audioPlayback.src = URL.createObjectURL(genieAudioBlob);
+        elements.audioPlayback.load();
+        elements.audioPlayback.play();
+        elements.audioPlayback.style.display = 'block';
+        elements.status.textContent = 'Genie is speaking...';
+        elements.audioPlayback.onended = unlockUI;
+        const translated = data.translated_text;
+        const original = data.original_english;
+        let displayText = translated;
+        if (currentLanguage !== 'en-US' && original) {
+            const cleanOriginal = original.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '').trim();
+            displayText += `<br><span class="translation">(Translation: "${cleanOriginal}")</span>`;
+        }
+        elements.genieText.innerHTML = displayText;
+    });
+
+    socket.on('transcription', (data) => { elements.transcriptText.textContent = data.text; });
+    socket.on('backend_message', (data) => { if (data.error) { elements.status.textContent = 'Error: ' + data.message; unlockUI(); } });
+
+    elements.recordButton.addEventListener('click', async () => {
+        if (isProcessing) return;
+        lockUI();
+        audioChunks = [];
+        elements.genieText.textContent = '...'; elements.transcriptText.textContent = '...';
+        elements.audioPlayback.style.display = 'none';
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 48000, channelCount: 1 } });
+            mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+            mediaRecorder.ondataavailable = event => event.data.size > 0 && audioChunks.push(event.data);
+            mediaRecorder.onstop = () => {
+                const completeBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+                const reader = new FileReader();
+                reader.onload = () => {
+                    socket.emit('final_audio_blob', {
+                        'audio_data': reader.result, 'mode': currentMode,
+                        'scenario': currentScenario, 'language': currentLanguage
+                    });
+                };
+                reader.readAsArrayBuffer(completeBlob);
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                elements.stopButton.style.display = 'none';
+            };
+            mediaRecorder.start();
+            elements.status.textContent = 'Recording... Speak now!';
+            elements.recordButton.style.display = 'none';
+            elements.stopButton.style.display = 'inline-block';
+        } catch (err) {
+            elements.status.textContent = 'Microphone access denied: ' + err.message;
+            unlockUI();
+        }
+    });
+
+    elements.stopButton.addEventListener('click', () => { if (mediaRecorder && mediaRecorder.state !== 'inactive') { mediaRecorder.stop(); } });
+
+    function sendTextMessage() {
+        const text = elements.textInput.value.trim();
+        if (!text || isProcessing) return;
+        lockUI();
+        elements.transcriptText.textContent = text;
+        elements.genieText.textContent = '...';
+        socket.emit('text_message', {
+            'text': text, 'mode': currentMode,
+            'scenario': currentScenario, 'language': currentLanguage
+        });
+        elements.textInput.value = '';
+    }
+
+    elements.sendButton.addEventListener('click', sendTextMessage);
+    elements.textInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { sendTextMessage(); } });
+</script>
+</body>
+</html>
