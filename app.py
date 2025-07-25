@@ -20,7 +20,6 @@ app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET_KEY", "a_very_secret_key")
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # --- LAZY INITIALIZATION SETUP ---
-# We will initialize these clients only when they are first needed.
 speech_client = None
 tts_client = None
 gemini_model = None
@@ -150,7 +149,7 @@ def translate_text(text, target_language_code):
     except Exception as e:
         return text
 
-# --- Core Logic Function ---
+# --- Core Logic Function (CORRECTED) ---
 def process_and_respond(client_sid, user_text, mode, scenario, language):
     try:
         model = get_gemini_model()
@@ -182,13 +181,18 @@ def process_and_respond(client_sid, user_text, mode, scenario, language):
         emoji_pattern = re.compile("[" u"\U0001F600-\U0001F64F" u"\U0001F300-\U0001F5FF" u"\U0001F680-\U0001F6FF" u"\U0001F700-\U0001F77F" u"\U0001F780-\U0001F7FF" u"\U0001F800-\U0001F8FF" u"\U0001F900-\U0001F9FF" u"\U0001FA00-\U0001FA6F" u"\U0001FA70-\U0001FAFF" u"\U00002702-\U000027B0" u"\U000024C2-\U0001F251" "]+", flags=re.UNICODE)
         text_for_speech = emoji_pattern.sub(r'', text_for_speech)
         
-        tts = get_tts_client()
-        if not tts: raise ConnectionError("TTS client is not initialized.")
+        # --- FIX: Use a different variable name to avoid shadowing the library import ---
+        tts_client_instance = get_tts_client()
+        if not tts_client_instance: raise ConnectionError("TTS client is not initialized.")
+        
+        # --- FIX: Use the 'tts' library alias for these configuration objects ---
         synthesis_input = tts.SynthesisInput(text=text_for_speech)
         voice_map = {"en-US": "en-US-Wavenet-D", "hi-IN": "hi-IN-Wavenet-A", "mr-IN": "mr-IN-Wavenet-A", "gu-IN": "gu-IN-Wavenet-A", "ta-IN": "ta-IN-Wavenet-A", "pa-IN": "pa-IN-Wavenet-A"}
         voice = tts.VoiceSelectionParams(language_code=language, name=voice_map.get(language, "en-US-Wavenet-D"))
         audio_config = tts.AudioConfig(audio_encoding=tts.AudioEncoding.MP3)
-        tts_response = tts.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
+        
+        # --- FIX: Use the client instance to make the API call ---
+        tts_response = tts_client_instance.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
         
         emit('audio_response', {'audio_data': tts_response.audio_content, 'translated_text': translated_text, 'original_english': english_response_text})
         print(f"Sent response for {client_sid} in {language}")
@@ -216,12 +220,18 @@ def handle_disconnect():
 def handle_final_audio_blob(data):
     client_sid = request.sid
     try:
-        speech = get_speech_client()
-        if not speech: raise ConnectionError("Speech client is not initialized.")
+        # --- FIX: Use a different variable name here as well ---
+        speech_client_instance = get_speech_client()
+        if not speech_client_instance: raise ConnectionError("Speech client is not initialized.")
+        
         audio_data = data['audio_data']
+        # --- FIX: Use the 'speech' library alias for this configuration object ---
         audio = speech.RecognitionAudio(content=audio_data)
         config = speech.RecognitionConfig(encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS, sample_rate_hertz=48000, language_code="en-US")
-        response = speech.recognize(config=config, audio=audio)
+        
+        # --- FIX: Use the client instance to make the API call ---
+        response = speech_client_instance.recognize(config=config, audio=audio)
+        
         user_transcript = response.results[0].alternatives[0].transcript if response.results else ""
         emit('transcription', {'text': user_transcript})
         print(f"Transcript for {client_sid}: '{user_transcript}'")
@@ -240,3 +250,4 @@ def handle_text_message(data):
 if __name__ == '__main__':
     print("Starting Flask Socket.IO server...")
     socketio.run(app, debug=True, allow_unsafe_werkzeug=True)
+
