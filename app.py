@@ -250,3 +250,4 @@ def handle_text_message(data):
 if __name__ == '__main__':
     print("Starting Flask Socket.IO server...")
     socketio.run(app, debug=True, allow_unsafe_werkzeug=True)
+
